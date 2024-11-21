@@ -1,7 +1,7 @@
 import os
 import subprocess
 import sys
-
+import argparse
 
 def run_command(command, shell=False):
     """Runs a command and prints its output."""
@@ -11,96 +11,106 @@ def run_command(command, shell=False):
         else:
             process = subprocess.run(command.split(), check=True, text=True, capture_output=True)
         print(process.stdout)
+        with open("wazuh_setup.log", "a") as log_file:
+            log_file.write(process.stdout)
+            log_file.write(process.stderr)
         return process.stdout
     except subprocess.CalledProcessError as e:
+        with open("wazuh_setup.log", "a") as log_file:
+            log_file.write(f"Error: {e.stderr}")
         print(f"Error: {e.stderr}")
         sys.exit(1)
-
-
-def uninstall_wazuh():
-    """Uninstalls Wazuh Manager and cleans up."""
-    print("Uninstalling Wazuh Manager...")
-    run_command("sudo apt-get purge -y wazuh-manager")
-    run_command("sudo rm -rf /var/ossec")
-    run_command("sudo apt-get autoremove -y")
-
 
 def install_prerequisites():
     """Installs prerequisites for Wazuh."""
     print("Installing prerequisites...")
-    run_command("sudo apt-get update")
-    run_command("sudo apt-get install -y curl apt-transport-https software-properties-common")
-
+    os_type = run_command("grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'").strip()
+    if os_type in ["ubuntu", "debian"]:
+        run_command("sudo apt-get update")
+        run_command("sudo apt-get install -y curl apt-transport-https software-properties-common")
+    elif os_type in ["centos", "rhel"]:
+        run_command("sudo yum install -y curl policycoreutils-python-utils")
+    else:
+        print(f"Unsupported OS detected: {os_type}. Supported: Ubuntu, Debian, CentOS, RHEL.")
+        sys.exit(1)
 
 def install_wazuh_manager():
     """Installs Wazuh Manager."""
     print("Installing Wazuh Manager...")
-    run_command("curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | sudo apt-key add -")
+    try:
+        run_command("curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | sudo apt-key add -")
+    except subprocess.CalledProcessError:
+        print("Failed to add Wazuh GPG key. Check your network connection and try again.")
+        sys.exit(1)
+
     run_command('echo "deb https://packages.wazuh.com/4.x/apt/ stable main" | sudo tee /etc/apt/sources.list.d/wazuh.list')
     run_command("sudo apt-get update")
     run_command("sudo apt-get install -y wazuh-manager")
-
 
 def configure_wazuh_manager(password):
     """Configures Wazuh Manager registration password."""
     print("Configuring Wazuh Manager...")
     config_file = "/var/ossec/etc/ossec.conf"
-    with open(config_file, "r") as file:
-        config = file.read()
+    backup_file = f"{config_file}.bak"
+    try:
+        run_command(f"sudo cp {config_file} {backup_file}")
+        with open(config_file, "r") as file:
+            config = file.read()
 
-    config = config.replace("<key>your_registration_password</key>", f"<key>{password}</key>")
+        config = config.replace("<key>your_registration_password</key>", f"<key>{password}</key>")
 
-    with open(config_file, "w") as file:
-        file.write(config)
+        with open(config_file, "w") as file:
+            file.write(config)
 
-    run_command("sudo systemctl restart wazuh-manager")
-
+        run_command("sudo systemctl restart wazuh-manager")
+    except Exception as e:
+        print(f"Failed to configure Wazuh Manager: {e}")
+        sys.exit(1)
 
 def setup_wazuh_api(password):
     """Sets up Wazuh API user and password."""
     print("Setting up Wazuh API...")
-    run_command(f"sudo /var/ossec/framework/python/bin/python3 /var/ossec/api/scripts/configure_api.py -u wazuh -p {password}")
-    run_command("sudo systemctl restart wazuh-api")
+    try:
+        run_command(f"sudo /var/ossec/framework/python/bin/python3 /var/ossec/api/scripts/configure_api.py -u wazuh -p {password}")
+        run_command("sudo systemctl restart wazuh-api")
+    except Exception as e:
+        print(f"Failed to set up Wazuh API: {e}")
+        sys.exit(1)
 
-
-def configure_firewall():
-    """Configures the firewall to allow Wazuh ports."""
-    print("Configuring firewall...")
-    run_command("sudo ufw allow 1514")
-    run_command("sudo ufw allow 1515")
-    run_command("sudo ufw allow 55000")
-    run_command("sudo ufw reload")
-
+def validate_password(password):
+    """Validates the password for minimum requirements."""
+    if len(password) < 8:
+        print("Error: Password must be at least 8 characters long.")
+        sys.exit(1)
 
 def main():
     """Main function to automate Wazuh Manager setup."""
-    print("Wazuh Manager Installer & Reinstaller for Ubuntu")
+    print("Wazuh Manager Installer")
 
-    # Step 1: Uninstall Wazuh (if needed)
-    uninstall_wazuh()
+    # Parse arguments for non-interactive setup
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--registration-password", required=False, help="Registration password for agents.")
+    parser.add_argument("--api-password", required=False, help="Password for Wazuh API user.")
+    args = parser.parse_args()
 
-    # Step 2: Install prerequisites
+    # Step 1: Install prerequisites
     install_prerequisites()
 
-    # Step 3: Install Wazuh Manager
+    # Step 2: Install Wazuh Manager
     install_wazuh_manager()
 
-    # Step 4: Configure Wazuh Manager registration password
-    reg_password = input("Enter a registration password for agents: ")
+    # Step 3: Configure Wazuh Manager registration password
+    reg_password = args.registration_password or input("Enter a registration password for agents: ").strip()
+    validate_password(reg_password)
     configure_wazuh_manager(reg_password)
 
-    # Step 5: Configure Wazuh API
-    api_password = input("Enter a password for the Wazuh API user: ")
+    # Step 4: Configure API
+    api_password = args.api_password or input("Enter a password for the Wazuh API user: ").strip()
+    validate_password(api_password)
     setup_wazuh_api(api_password)
 
-    # Step 6: Configure Firewall
-    configure_firewall()
-
-    print("Wazuh Manager installation, reconfiguration, and setup complete!")
+    print("Wazuh Manager installation and setup complete!")
     print("You can now manage Wazuh using the API or via the dashboard.")
-    print(f"Registration password for agents: {reg_password}")
-    print(f"Wazuh API credentials - User: wazuh, Password: {api_password}")
-
 
 if __name__ == "__main__":
     main()
