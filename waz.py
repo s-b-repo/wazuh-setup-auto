@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 
+
 def run_command(command, shell=False):
     """Runs a command and prints its output."""
     try:
@@ -16,18 +17,19 @@ def run_command(command, shell=False):
         sys.exit(1)
 
 
+def uninstall_wazuh():
+    """Uninstalls Wazuh Manager and cleans up."""
+    print("Uninstalling Wazuh Manager...")
+    run_command("sudo apt-get purge -y wazuh-manager")
+    run_command("sudo rm -rf /var/ossec")
+    run_command("sudo apt-get autoremove -y")
+
+
 def install_prerequisites():
     """Installs prerequisites for Wazuh."""
     print("Installing prerequisites...")
-    os_type = run_command("grep '^ID=' /etc/os-release").strip()
-    if "ubuntu" in os_type or "debian" in os_type:
-        run_command("sudo apt-get update")
-        run_command("sudo apt-get install -y curl apt-transport-https software-properties-common")
-    elif "centos" in os_type or "rhel" in os_type:
-        run_command("sudo yum install -y curl policycoreutils-python-utils")
-    else:
-        print("Unsupported OS. This script supports Ubuntu, Debian, CentOS, and RHEL.")
-        sys.exit(1)
+    run_command("sudo apt-get update")
+    run_command("sudo apt-get install -y curl apt-transport-https software-properties-common")
 
 
 def install_wazuh_manager():
@@ -61,26 +63,44 @@ def setup_wazuh_api(password):
     run_command("sudo systemctl restart wazuh-api")
 
 
+def configure_firewall():
+    """Configures the firewall to allow Wazuh ports."""
+    print("Configuring firewall...")
+    run_command("sudo ufw allow 1514")
+    run_command("sudo ufw allow 1515")
+    run_command("sudo ufw allow 55000")
+    run_command("sudo ufw reload")
+
+
 def main():
     """Main function to automate Wazuh Manager setup."""
-    print("Wazuh Manager Installer")
+    print("Wazuh Manager Installer & Reinstaller for Ubuntu")
 
-    # Step 1: Install prerequisites
+    # Step 1: Uninstall Wazuh (if needed)
+    uninstall_wazuh()
+
+    # Step 2: Install prerequisites
     install_prerequisites()
 
-    # Step 2: Install Wazuh Manager
+    # Step 3: Install Wazuh Manager
     install_wazuh_manager()
 
-    # Step 3: Configure Wazuh Manager registration password
+    # Step 4: Configure Wazuh Manager registration password
     reg_password = input("Enter a registration password for agents: ")
     configure_wazuh_manager(reg_password)
 
-    # Step 4: Configure API
+    # Step 5: Configure Wazuh API
     api_password = input("Enter a password for the Wazuh API user: ")
     setup_wazuh_api(api_password)
 
-    print("Wazuh Manager installation and setup complete!")
+    # Step 6: Configure Firewall
+    configure_firewall()
+
+    print("Wazuh Manager installation, reconfiguration, and setup complete!")
     print("You can now manage Wazuh using the API or via the dashboard.")
+    print(f"Registration password for agents: {reg_password}")
+    print(f"Wazuh API credentials - User: wazuh, Password: {api_password}")
+
 
 if __name__ == "__main__":
     main()
